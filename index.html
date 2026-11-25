@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Normal Map Generator (Rust + WASM)</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #18181b;
+      color: #f4f4f5;
+      margin: 0;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 20px;
+      align-items: center;
+      background: #27272a;
+      padding: 14px 20px;
+      border-radius: 8px;
+      border: 1px solid #3f3f46;
+    }
+    label { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+    button {
+      background: #2563eb;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    button:hover { background: #1d4ed8; }
+    button:disabled { background: #52525b; cursor: not-allowed; }
+    .dropzone {
+      width: 100%;
+      max-width: 900px;
+      border: 2px dashed #52525b;
+      border-radius: 10px;
+      padding: 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s;
+    }
+    .dropzone:hover { border-color: #3b82f6; }
+    .preview-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      max-width: 1100px;
+      width: 100%;
+    }
+    .canvas-box {
+      background: #27272a;
+      padding: 10px;
+      border-radius: 8px;
+      text-align: center;
+    }
+    canvas {
+      max-width: 100%;
+      height: auto;
+      background: #09090b;
+      border-radius: 4px;
+    }
+    #stats { font-size: 13px; color: #a1a1aa; }
+  </style>
+</head>
+<body>
+
+  <div class="dropzone" id="dropzone">
+    Arrastra aquí tu textura de tronco (.png / .jpg) o haz clic para seleccionarla
+    <input type="file" id="fileInput" accept="image/*" hidden>
+  </div>
+
+  <div class="controls">
+    <label>
+      Fuerza (Strength):
+      <input type="range" id="strength" min="0.1" max="15" step="0.1" value="3.0">
+      <span id="strengthVal">3.0</span>
+    </label>
+
+    <label>
+      <input type="checkbox" id="invertGreen">
+      Invertir Verde (DirectX / 3ds Max)
+    </label>
+
+    <button id="downloadBtn" disabled>Descargar _Normal.png</button>
+    <span id="stats">Esperando imagen...</span>
+  </div>
+
+  <div class="preview-grid">
+    <div class="canvas-box">
+      <div>Original</div>
+      <canvas id="srcCanvas"></canvas>
+    </div>
+    <div class="canvas-box">
+      <div>Normal Map (WASM)</div>
+      <canvas id="dstCanvas"></canvas>
+    </div>
+  </div>
+
+  <script type="module">
+    import init, { generar_normal_map } from './pkg/normal_gen_wasm.js';
+
+    await init();
+
+    const dropzone = document.getElementById('dropzone');
+    const fileInput = document.getElementById('fileInput');
+    const strengthInput = document.getElementById('strength');
+    const strengthVal = document.getElementById('strengthVal');
+    const invertGreenInput = document.getElementById('invertGreen');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const stats = document.getElementById('stats');
+    const srcCanvas = document.getElementById('srcCanvas');
+    const dstCanvas = document.getElementById('dstCanvas');
+    const srcCtx = srcCanvas.getContext('2d');
+    const dstCtx = dstCanvas.getContext('2d');
+
+    let originalImageData = null;
+    let currentFileName = 'textura';
+
+    function processImage() {
+      if (!originalImageData) return;
+
+      const t0 = performance.now();
+      const width = originalImageData.width;
+      const height = originalImageData.height;
+
+      // Clonamos el buffer original para no destruir la imagen fuente al mover sliders
+      const copy = new Uint8ClampedArray(originalImageData.data);
+      const strength = parseFloat(strengthInput.value);
+      const invertGreen = invertGreenInput.checked;
+
+      generar_normal_map(copy, width, height, strength, invertGreen);
+
+      const outData = new ImageData(copy, width, height);
+      dstCtx.putImageData(outData, 0, 0);
+
+      const t1 = performance.now();
+      stats.textContent = `${width}x${height} px | Procesado en ${(t1 - t0).toFixed(2)} ms`;
+    }
+
+    function loadFile(file) {
+      if (!file) return;
+      currentFileName = file.name.replace(/\.[^/.]+$/, '');
+      const img = new Image();
+      img.onload = () => {
+        srcCanvas.width = dstCanvas.width = img.width;
+        srcCanvas.height = dstCanvas.height = img.height;
+        srcCtx.drawImage(img, 0, 0);
+        originalImageData = srcCtx.getImageData(0, 0, img.width, img.height);
+        downloadBtn.disabled = false;
+        processImage();
+      };
+      img.src = URL.createObjectURL(file);
+    }
+
+    dropzone.addEventListener('click', () => fileInput.click());
+    dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.style.borderColor = '#3b82f6'; });
+    dropzone.addEventListener('dragleave', () => { dropzone.style.borderColor = '#52525b'; });
+    dropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropzone.style.borderColor = '#52525b';
+      loadFile(e.dataTransfer.files[0]);
+    });
+    fileInput.addEventListener('change', (e) => loadFile(e.target.files[0]));
+
+    strengthInput.addEventListener('input', () => {
+      strengthVal.textContent = parseFloat(strengthInput.value).toFixed(1);
+      processImage();
+    });
+    invertGreenInput.addEventListener('change', processImage);
+
+    downloadBtn.addEventListener('click', () => {
+      const link = document.createElement('a');
+      link.download = `${currentFileName}_Normal.png`;
+      link.href = dstCanvas.toDataURL('image/png');
+      link.click();
+    });
+  </script>
+</body>
+</html>
